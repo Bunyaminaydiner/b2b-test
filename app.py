@@ -53,7 +53,7 @@ def fetch_companies_from_maps(keyword, apify_key):
         return []
 
 def scrape_website_details(url):
-    """Terminator Scraper: Agresif Regex ve SSL Bypass ile çalışır"""
+    """Deep Scraper: Raw HTML araması ve kesin link yönlendirmesi yapar"""
     if not url: return None, None
     if not url.startswith("http"): url = "http://" + url
     
@@ -67,36 +67,59 @@ def scrape_website_details(url):
         text_content = soup.get_text(separator=' ')
         
         email = None
-        # 1. Tıklanabilir mail araması
         for a in soup.find_all('a', href=True):
             if a['href'].lower().startswith('mailto:'):
                 email = a['href'].replace('mailto:', '').split('?')[0].strip()
                 break
         
-        # 2. Canavar Email Regex'i
+        # DÜZELTME: Sadece görünen metinde değil, HTML'in EN DİBİNDE (Raw HTML) email ara!
         if not email:
-            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
-            valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css'))]
-            if valid_emails: email = valid_emails[0]
-
-        # 3. Canavar Telefon Regex'i (0 (312), +90 532, 0532 vs hepsini kapsar)
+            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
+            valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css', '.woff'))]
+            if valid_emails: email = valid_emails[0] 
+            
         phone = None
         phones = re.findall(r'(?:0|\+90|90)?\s*\(?\d{3}\)?\s*\d{3}\s*\d{2}\s*\d{2}', text_content)
-        if phones:
-            phone = phones[0]
+        if phones: phone = phones[0]
 
         final_contact = ""
         if email: final_contact += f"{email}"
-        if phone: 
-            final_contact += f" | Site Tel: {phone}" if email else f"Site Tel: {phone}"
+        if phone: final_contact += f" | Site Tel: {phone}" if email else f"Site Tel: {phone}"
             
         return final_contact if final_contact else None
 
     try:
-        # verify=False ekledik: Sertifikası bozuk sitelere (doktor/lokal esnaf) zorla girer!
         res = requests.get(url, timeout=10, headers=headers, verify=False)
-        if res.status_code != 200:
-            return None, None
+        if res.status_code != 200: return None, None
+            
+        html = res.text
+        soup = BeautifulSoup(html, 'html.parser')
+        contact_info = extract_contact(html)
+        
+        # Link bulmayı daha akıllı yaptık ( /iletisim gibi yarım linkleri bozmadan birleştirir )
+        form_url = None
+        for a in soup.find_all('a', href=True):
+            href = a['href'].lower()
+            if any(word in href for word in ['iletisim', 'contact', 'bize-ulasin', 'hakkimizda']):
+                form_url = a['href']
+                if not form_url.startswith('http'):
+                    base_url = url.split('/')[0] + "//" + url.split('/')[2] # Ana domaini alır
+                    form_url = base_url + form_url if form_url.startswith('/') else base_url + '/' + form_url
+                break
+        
+        # ZEKİ HAMLE: Eğer ana sayfada mail yoksa (sadece tel bulsa bile), İletişim sayfasına dal!
+        if (not contact_info or "@" not in contact_info) and form_url:
+            try:
+                res_contact = requests.get(form_url, timeout=10, headers=headers, verify=False)
+                if res_contact.status_code == 200:
+                    new_contact = extract_contact(res_contact.text)
+                    if new_contact and "@" in new_contact:
+                        contact_info = new_contact
+            except: pass
+                
+        return contact_info, form_url
+    except:
+        return None, None
             
         html = res.text
         soup = BeautifulSoup(html, 'html.parser')
