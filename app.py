@@ -3,9 +3,12 @@ import sqlite3
 import pandas as pd
 import requests
 import re
-import time
+import urllib3
 from apify_client import ApifyClient
 from bs4 import BeautifulSoup
+
+# Güvenlik (SSL) sertifikası bozuk sitelere girerken uyarı vermesini engelle (Kapıyı kır modu)
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 1. VERİTABANI ALTYAPISI ---
 conn = sqlite3.connect('b2b_automation.db', check_same_thread=False)
@@ -27,7 +30,7 @@ def save_setting(api_name, api_key):
 # --- 2. FONKSİYONEL MOTORLAR (APIFY, SCRAPER, AI, BREVO) ---
 
 def fetch_companies_from_maps(keyword, apify_key):
-    """Google Maps üzerinden şirketleri ve web sitelerini toplar"""
+    """Google Maps üzerinden şirketleri, web sitelerini ve TELEFON numaralarını toplar"""
     client = ApifyClient(apify_key)
     run_input = {
         "searchStringsArray": [keyword],
@@ -40,7 +43,9 @@ def fetch_companies_from_maps(keyword, apify_key):
         for item in client.dataset(run.default_dataset_id).iterate_items():
             results.append({
                 "name": item.get("title"),
-                "website": item.get("website")
+                "website": item.get("website"),
+                # Google Maps'te kayıtlı telefonu da alıyoruz!
+                "maps_phone": item.get("phoneUnformatted") or item.get("phone") 
             })
         return results
     except Exception as e:
@@ -48,7 +53,7 @@ def fetch_companies_from_maps(keyword, apify_key):
         return []
 
 def scrape_website_details(url):
-    """God Mode Scraper: Gizli Mailleri ve Telefon Numaralarını Avlar"""
+    """Terminator Scraper: Agresif Regex ve SSL Bypass ile çalışır"""
     if not url: return None, None
     if not url.startswith("http"): url = "http://" + url
     
@@ -62,30 +67,34 @@ def scrape_website_details(url):
         text_content = soup.get_text(separator=' ')
         
         email = None
+        # 1. Tıklanabilir mail araması
         for a in soup.find_all('a', href=True):
             if a['href'].lower().startswith('mailto:'):
                 email = a['href'].replace('mailto:', '').split('?')[0].strip()
                 break
         
+        # 2. Canavar Email Regex'i
         if not email:
-            emails = re.findall(r'[\w\.-]+\s*(?:@|\[at\]|\(at\))\s*[\w\.-]+\.\w{2,}', text_content)
-            valid_emails = [e.replace(' ', '').replace('[at]', '@').replace('(at)', '@') for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css'))]
+            emails = re.findall(r'[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+', text_content)
+            valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css'))]
             if valid_emails: email = valid_emails[0]
 
+        # 3. Canavar Telefon Regex'i (0 (312), +90 532, 0532 vs hepsini kapsar)
         phone = None
-        phones = re.findall(r'(?:\+90|0)\s?[1-9]\d{2}\s?\d{3}\s?\d{2}\s?\d{2}', text_content)
+        phones = re.findall(r'(?:0|\+90|90)?\s*\(?\d{3}\)?\s*\d{3}\s*\d{2}\s*\d{2}', text_content)
         if phones:
             phone = phones[0]
 
         final_contact = ""
         if email: final_contact += f"{email}"
         if phone: 
-            final_contact += f" | Tel: {phone}" if email else f"Tel: {phone}"
+            final_contact += f" | Site Tel: {phone}" if email else f"Site Tel: {phone}"
             
         return final_contact if final_contact else None
 
     try:
-        res = requests.get(url, timeout=7, headers=headers)
+        # verify=False ekledik: Sertifikası bozuk sitelere (doktor/lokal esnaf) zorla girer!
+        res = requests.get(url, timeout=10, headers=headers, verify=False)
         if res.status_code != 200:
             return None, None
             
@@ -105,7 +114,7 @@ def scrape_website_details(url):
         
         if not contact_info and form_url:
             try:
-                res_contact = requests.get(form_url, timeout=7, headers=headers)
+                res_contact = requests.get(form_url, timeout=10, headers=headers, verify=False)
                 if res_contact.status_code == 200:
                     contact_info = extract_contact(res_contact.text)
             except:
@@ -116,7 +125,7 @@ def scrape_website_details(url):
         return None, None
 
 def generate_personalized_email(company_name, website, groq_key):
-    """Groq Llama-3.1 kullanarak şirkete özel ikna edici mail üretir"""
+    """Groq Llama-3.1"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {groq_key}",
@@ -148,7 +157,6 @@ def generate_personalized_email(company_name, website, groq_key):
         return f"Sistem Hatası: {str(e)}"
 
 def send_email_via_brevo(to_email, subject, html_content, brevo_key, sender_email):
-    """Brevo API üzerinden maili gönderir"""
     url = "https://api.brevo.com/v3/smtp/email"
     headers = {
         "accept": "application/json",
@@ -172,7 +180,6 @@ st.set_page_config(page_title="B2B Pazarlama Otomasyonu", layout="wide")
 st.title("🤖 Gelişmiş B2B Pazarlama ve Lead Otomasyon Sistemi")
 st.write("Google Maps entegrasyonlu, Yapay Zeka destekli kişiselleştirilmiş soğuk satış aracı.")
 
-# SİDEBAR - AYARLAR
 with st.sidebar:
     st.header("⚙️ Sistem Entegrasyonları")
     apify_input = st.text_input("Apify API Token", value=get_setting("Apify"), type="password")
@@ -189,7 +196,6 @@ with st.sidebar:
         save_setting("TestReceiver", test_receiver)
         st.success("Tüm konfigürasyonlar başarıyla veritabanına işlendi!")
 
-# ANA SEKMELER
 tab1, tab2 = st.tabs(["🚀 Canlı Test Çalıştırma", "📊 Veritabanı & Gönderim Raporu"])
 
 with tab1:
@@ -217,7 +223,12 @@ with tab1:
                         st.info(f"👉 {comp['name']} web sitesi detayları taranıyor...")
                         email, form_url = scrape_website_details(comp['website'])
                         
-                        st.write(f"Bulunan İletişim Bilgisi: `{email}`")
+                        # ZEKİ BİRLEŞTİRME: Siteden bulamadıysa Haritadaki Telefonu göster!
+                        final_contact_display = email
+                        if not final_contact_display and comp.get('maps_phone'):
+                            final_contact_display = f"Maps Tel: {comp['maps_phone']}"
+                        
+                        st.write(f"Bulunan İletişim Bilgisi: `{final_contact_display}`")
                         st.write(f"Bulunan İletişim Formu: `{form_url}`")
                         
                         st.info(f"🧠 Yapay zeka {comp['name']} için özel metin kurguluyor...")
@@ -246,7 +257,7 @@ with tab1:
                         
                         c.execute("""INSERT INTO Leads (keyword, company_name, website, email, form_url, ai_message, status) 
                                      VALUES (?, ?, ?, ?, ?, ?, ?)""", 
-                                  (keyword_input, comp['name'], comp['website'], email, form_url, ai_msg, status))
+                                  (keyword_input, comp['name'], comp['website'], final_contact_display, form_url, ai_msg, status))
                         conn.commit()
                         
             st.success("🎉 Seçilen kelime için tüm akış başarıyla tamamlandı! Rapor sekmesini inceleyebilirsiniz.")
