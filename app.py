@@ -48,40 +48,53 @@ def fetch_companies_from_maps(keyword, apify_key):
         return []
 
 def scrape_website_details(url):
-    """Web sitesinin içine girip mail (mailto veya metin) veya iletişim formu linkini bulur"""
-    if not url:
-        return None, None
-    if not url.startswith("http"):
-        url = "http://" + url
+    """Ana sayfayı ve İletişim sayfasını derinlemesine tarayan Terminator Scraper"""
+    if not url: return None, None
+    if not url.startswith("http"): url = "http://" + url
+    
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    email = None
+    form_url = None
+    
+    def extract_email(html):
+        """Verilen HTML içinden mailto ve metin maillerini ayıklar"""
+        soup = BeautifulSoup(html, 'html.parser')
+        # Önce tıklanabilir mailto ara
+        for a in soup.find_all('a', href=True):
+            if a['href'].lower().startswith('mailto:'):
+                return a['href'].replace('mailto:', '').split('?')[0].strip()
+        # Yoksa düz yazı içinde ara
+        emails = re.findall(r'[a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+\.[a-zA-Z]{2,}', html)
+        valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'))]
+        if valid_emails: return valid_emails[0]
+        return None
+
     try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
         res = requests.get(url, timeout=5, headers=headers)
         if res.status_code == 200:
-            soup = BeautifulSoup(res.text, 'html.parser')
-            email = None
-            form_url = None
+            html = res.text
+            soup = BeautifulSoup(html, 'html.parser')
             
-            # 1. Aşama: HTML içindeki "mailto:" (Tıklanabilir Mail) linklerini ara
-            for a in soup.find_all('a', href=True):
-                if a['href'].lower().startswith('mailto:'):
-                    email = a['href'].replace('mailto:', '').split('?')[0].strip()
-                    break
+            # 1. Aşama: Ana sayfada e-posta ara
+            email = extract_email(html)
             
-            # 2. Aşama: Eğer mailto yoksa, sayfa içindeki düz yazıları Regex ile tara
-            if not email:
-                emails = re.findall(r'[a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+\.[a-zA-Z]{2,}', res.text)
-                valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'))]
-                if valid_emails:
-                    email = valid_emails[0]
-            
-            # 3. Aşama: İletişim sayfasını/formunu bul
+            # 2. Aşama: İletişim sayfasının linkini bul
             for a in soup.find_all('a', href=True):
                 href = a['href'].lower()
-                if 'iletisim' in href or 'contact' in href or 'form' in href:
+                if any(word in href for word in ['iletisim', 'contact', 'bize-ulasin', 'ulasim']):
                     form_url = a['href']
                     if not form_url.startswith('http'):
                         form_url = url.rstrip('/') + '/' + form_url.lstrip('/')
                     break
+            
+            # 3. AŞAMA (DERİN TARAMA): Ana sayfada mail yok ama İletişim sayfası varsa, oraya gir ve tara!
+            if not email and form_url:
+                try:
+                    res_contact = requests.get(form_url, timeout=5, headers=headers)
+                    if res_contact.status_code == 200:
+                        email = extract_email(res_contact.text)
+                except:
+                    pass
                     
             return email, form_url
     except:
