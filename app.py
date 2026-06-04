@@ -72,7 +72,7 @@ def scrape_website_details(url):
         # 2. Çok daha geniş Email Regex'i ([at] veya boşluklu yazılanları da bulur)
         if not email:
             emails = re.findall(r'[\w\.-]+\s*(?:@|\[at\]|\(at\))\s*[\w\.-]+\.\w{2,}', text_content)
-            valid_emails = [e.replace(' ', '').replace('[at]', '@').replace('(at)', '@') for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css')]
+           valid_emails = [e.replace(' ', '').replace('[at]', '@').replace('(at)', '@') for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css'))]
             if valid_emails: email = valid_emails[0]
 
         # 3. Telefon Numarası Avcısı (Türkiye formatları: 05xx, +90, 0312 vs.)
