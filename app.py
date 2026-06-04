@@ -46,12 +46,11 @@ def fetch_companies_from_maps(keyword, apify_key):
     except Exception as e:
         st.error(f"Apify Harita Hatası: {e}")
         return []
-def scrape_website_details(url):
+      def scrape_website_details(url):
     """God Mode Scraper: Gizli Mailleri ve Telefon Numaralarını Avlar"""
     if not url: return None, None
     if not url.startswith("http"): url = "http://" + url
     
-    # Gerçek bir insan tarayıcısı gibi davran (Cloudflare/Bot korumalarını aşmak için)
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
@@ -59,29 +58,24 @@ def scrape_website_details(url):
     
     def extract_contact(html):
         soup = BeautifulSoup(html, 'html.parser')
-        # Sitenin içindeki tüm metni al
         text_content = soup.get_text(separator=' ')
         
         email = None
-        # 1. Tıklanabilir mailto araması
         for a in soup.find_all('a', href=True):
             if a['href'].lower().startswith('mailto:'):
                 email = a['href'].replace('mailto:', '').split('?')[0].strip()
                 break
         
-        # 2. Çok daha geniş Email Regex'i ([at] veya boşluklu yazılanları da bulur)
         if not email:
             emails = re.findall(r'[\w\.-]+\s*(?:@|\[at\]|\(at\))\s*[\w\.-]+\.\w{2,}', text_content)
-           valid_emails = [e.replace(' ', '').replace('[at]', '@').replace('(at)', '@') for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css'))]
+            valid_emails = [e.replace(' ', '').replace('[at]', '@').replace('(at)', '@') for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css'))]
             if valid_emails: email = valid_emails[0]
 
-        # 3. Telefon Numarası Avcısı (Türkiye formatları: 05xx, +90, 0312 vs.)
         phone = None
         phones = re.findall(r'(?:\+90|0)\s?[1-9]\d{2}\s?\d{3}\s?\d{2}\s?\d{2}', text_content)
         if phones:
             phone = phones[0]
 
-        # 4. Sonucu birleştir (Veritabanını bozmamak için tek satırda dönüyoruz)
         final_contact = ""
         if email: final_contact += f"{email}"
         if phone: 
@@ -90,7 +84,6 @@ def scrape_website_details(url):
         return final_contact if final_contact else None
 
     try:
-        # Timeout süresini 7 saniyeye çıkardık ki site yavaşsa beklesin
         res = requests.get(url, timeout=7, headers=headers)
         if res.status_code != 200:
             return None, None
@@ -98,10 +91,8 @@ def scrape_website_details(url):
         html = res.text
         soup = BeautifulSoup(html, 'html.parser')
         
-        # 1. Aşama: Ana sayfada iletişim bilgisi (Mail/Tel) ara
         contact_info = extract_contact(html)
         
-        # 2. Aşama: İletişim sayfasının linkini bul
         form_url = None
         for a in soup.find_all('a', href=True):
             href = a['href'].lower()
@@ -111,7 +102,6 @@ def scrape_website_details(url):
                     form_url = url.rstrip('/') + '/' + form_url.lstrip('/')
                 break
         
-        # 3. AŞAMA (DERİN TARAMA): Ana sayfada bilgi yoksa, iletişim sayfasına sız ve orada ara!
         if not contact_info and form_url:
             try:
                 res_contact = requests.get(form_url, timeout=7, headers=headers)
@@ -123,8 +113,6 @@ def scrape_website_details(url):
         return contact_info, form_url
     except:
         return None, None
-
-
 def generate_personalized_email(company_name, website, groq_key):
     """Groq Llama-3.1 kullanarak şirkete özel ikna edici mail üretir"""
     url = "https://api.groq.com/openai/v1/chat/completions"
