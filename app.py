@@ -31,7 +31,7 @@ def fetch_companies_from_maps(keyword, apify_key):
     client = ApifyClient(apify_key)
     run_input = {
         "searchStringsArray": [keyword],
-        "maxCrawledPlacesPerSearch": 2,  # Test için 2 şirket yeterli, mülatkatta artırılabilir
+        "maxCrawledPlacesPerSearch": 2,  
         "language": "tr",
     }
     try:
@@ -46,7 +46,8 @@ def fetch_companies_from_maps(keyword, apify_key):
     except Exception as e:
         st.error(f"Apify Harita Hatası: {e}")
         return []
-      def scrape_website_details(url):
+
+def scrape_website_details(url):
     """God Mode Scraper: Gizli Mailleri ve Telefon Numaralarını Avlar"""
     if not url: return None, None
     if not url.startswith("http"): url = "http://" + url
@@ -113,6 +114,7 @@ def fetch_companies_from_maps(keyword, apify_key):
         return contact_info, form_url
     except:
         return None, None
+
 def generate_personalized_email(company_name, website, groq_key):
     """Groq Llama-3.1 kullanarak şirkete özel ikna edici mail üretir"""
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -201,7 +203,6 @@ with tab1:
             st.warning("Lütfen taratmak için bir anahtar kelime girin.")
         else:
             with st.spinner("Sistem çalışıyor... Lütfen adımları takip edin."):
-                # Adım 1: Haritadan Şirketleri Bul
                 st.info("1. Adım: Google Maps üzerinde şirket araması yapılıyor...")
                 companies = fetch_companies_from_maps(keyword_input, apify_input)
                 
@@ -213,20 +214,17 @@ with tab1:
                     for comp in companies:
                         st.markdown(f"--- \n**İşlenen Firma:** {comp['name']}")
                         
-                        # Adım 2: Web Sitesini Tara (Mail ve Form Bul)
                         st.info(f"👉 {comp['name']} web sitesi detayları taranıyor...")
                         email, form_url = scrape_website_details(comp['website'])
                         
-                        st.write(f"Bulunan E-posta: `{email}`")
+                        st.write(f"Bulunan İletişim Bilgisi: `{email}`")
                         st.write(f"Bulunan İletişim Formu: `{form_url}`")
                         
-                        # Adım 3: AI ile Kişisel Mail Metni Üret
                         st.info(f"🧠 Yapay zeka {comp['name']} için özel metin kurguluyor...")
                         ai_msg = generate_personalized_email(comp['name'], comp['website'], groq_input)
                         st.text_area("Üretilen Kişiselleştirilmiş Metin", value=ai_msg, height=150, key=comp['name'])
                         
-                        # Adım 4: Brevo ile Mail Gönderimi
-                        target_email = email if email else test_receiver
+                        target_email = test_receiver if not email or "Tel:" in email else email.split(" | ")[0]
                         st.info(f"📧 Mail Brevo üzerinden {target_email} adresine yönlendiriliyor...")
                         
                         is_sent = send_email_via_brevo(
@@ -238,7 +236,7 @@ with tab1:
                         )
                         
                         status = "Gönderildi" if is_sent else "Brevo Gönderim Hatası"
-                        if not email and is_sent:
+                        if ("Tel:" in str(email) or not email) and is_sent:
                             status = "Gönderildi (Şirket maili bulunamadığından Test Mailine İletildi)"
                         
                         if is_sent:
@@ -246,7 +244,6 @@ with tab1:
                         else:
                             st.error("❌ Mail iletiminde bir sorun oluştu.")
                         
-                        # Adım 5: Veritabanına kaydet
                         c.execute("""INSERT INTO Leads (keyword, company_name, website, email, form_url, ai_message, status) 
                                      VALUES (?, ?, ?, ?, ?, ?, ?)""", 
                                   (keyword_input, comp['name'], comp['website'], email, form_url, ai_msg, status))
@@ -257,7 +254,7 @@ with tab1:
 with tab2:
     st.subheader("Sistem Veritabanı Güncel Durumu")
     if st.button("Rapor Tablosunu Yenile"):
-        st.cache_data.clear() # Cache yenileme metodu güncellendi
+        st.cache_data.clear()
     
     df = pd.read_sql_query("SELECT * FROM Leads ORDER BY id DESC", conn)
     if not df.empty:
