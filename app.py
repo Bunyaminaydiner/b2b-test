@@ -26,6 +26,27 @@ def save_setting(api_name, api_key):
 
 # --- 2. FONKSİYONEL MOTORLAR (APIFY, SCRAPER, AI, BREVO) ---
 
+def fetch_companies_from_maps(keyword, apify_key):
+    """Google Maps üzerinden şirketleri ve web sitelerini toplar"""
+    client = ApifyClient(apify_key)
+    run_input = {
+        "searchStringsArray": [keyword],
+        "maxCrawledPlacesPerSearch": 2,  # Test için 2 şirket yeterli, mülatkatta artırılabilir
+        "language": "tr",
+    }
+    try:
+        run = client.actor("compass/google-maps-extractor").call(run_input=run_input)
+        results = []
+        for item in client.dataset(run.default_dataset_id).iterate_items():
+            results.append({
+                "name": item.get("title"),
+                "website": item.get("website")
+            })
+        return results
+    except Exception as e:
+        st.error(f"Apify Harita Hatası: {e}")
+        return []
+
 def scrape_website_details(url):
     """Web sitesinin içine girip mail (mailto veya metin) veya iletişim formu linkini bulur"""
     if not url:
@@ -40,7 +61,7 @@ def scrape_website_details(url):
             email = None
             form_url = None
             
-            # 1. Aşama: HTML içindeki "mailto:" (Tıklanabilir Mail) linklerini ara (En kesin yöntem)
+            # 1. Aşama: HTML içindeki "mailto:" (Tıklanabilir Mail) linklerini ara
             for a in soup.find_all('a', href=True):
                 if a['href'].lower().startswith('mailto:'):
                     email = a['href'].replace('mailto:', '').split('?')[0].strip()
@@ -66,35 +87,9 @@ def scrape_website_details(url):
     except:
         pass
     return None, None
-    if not url.startswith("http"):
-        url = "http://" + url
-    try:
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
-        res = requests.get(url, timeout=5, headers=headers)
-        if res.status_code == 200:
-            # Regex ile mail adreslerini ayıkla
-            emails = re.findall(r'[a-zA-Z0-9.\-_]+@[a-zA-Z0-9.\-_]+\.[a-zA-Z0-9.\-_]+', res.text)
-            # Yaygın sahte uzantıları elemek için basit filtre
-            valid_emails = [e for e in emails if not e.endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp'))]
-            email = valid_emails[0] if valid_emails else None
-            
-            # İletişim sayfasını/formunu bul
-            soup = BeautifulSoup(res.text, 'html.parser')
-            form_url = None
-            for a in soup.find_all('a', href=True):
-                href = a['href'].lower()
-                if 'iletisim' in href or 'contact' in href or 'form' in href:
-                    form_url = a['href']
-                    if not form_url.startswith('http'):
-                        form_url = url.rstrip('/') + '/' + form_url.lstrip('/')
-                    break
-            return email, form_url
-    except:
-        pass
-    return None, None
 
 def generate_personalized_email(company_name, website, groq_key):
-    """Groq Llama3 kullanarak şirkete özel ikna edici mail üretir"""
+    """Groq Llama-3.1 kullanarak şirkete özel ikna edici mail üretir"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {groq_key}",
@@ -111,8 +106,8 @@ def generate_personalized_email(company_name, website, groq_key):
     2. Adreslerinin/konumlarının getirdiği potansiyelin sunduğumuz hizmetlerle nasıl örtüştüğünü samimi anlat.
     3. Sadece mailin gövde metnini yaz.
     """
-    payload = payload = {
-        "model": "llama-3.1-8b-instant",  # İŞTE SADECE BU SATIRI GÜNCELLEDİK
+    payload = {
+        "model": "llama-3.1-8b-instant",
         "messages": [{"role": "user", "content": prompt}],
         "temperature": 0.7
     }
@@ -121,7 +116,6 @@ def generate_personalized_email(company_name, website, groq_key):
         if response.status_code == 200:
             return response.json()['choices'][0]['message']['content']
         else:
-            # Hatanın gerçek sebebini ekrana basacak kısım burası:
             return f"Groq API Hatası! Kod: {response.status_code}, Detay: {response.text}"
     except Exception as e:
         return f"Sistem Hatası: {str(e)}"
@@ -207,7 +201,6 @@ with tab1:
                         st.text_area("Üretilen Kişiselleştirilmiş Metin", value=ai_msg, height=150, key=comp['name'])
                         
                         # Adım 4: Brevo ile Mail Gönderimi
-                        # Eğer şirketin gerçek maili yoksa veya test ortamındaysak mailleri test alıcısına yolla (görev başarılı görünsün diye)
                         target_email = email if email else test_receiver
                         st.info(f"📧 Mail Brevo üzerinden {target_email} adresine yönlendiriliyor...")
                         
@@ -239,7 +232,7 @@ with tab1:
 with tab2:
     st.subheader("Sistem Veritabanı Güncel Durumu")
     if st.button("Rapor Tablosunu Yenile"):
-        st.invalidate_cache()
+        st.cache_data.clear() # Cache yenileme metodu güncellendi
     
     df = pd.read_sql_query("SELECT * FROM Leads ORDER BY id DESC", conn)
     if not df.empty:
