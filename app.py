@@ -7,7 +7,7 @@ import urllib3
 from apify_client import ApifyClient
 from bs4 import BeautifulSoup
 
-# Güvenlik (SSL) sertifikası bozuk sitelere girerken uyarı vermesini engelle (Kapıyı kır modu)
+# Güvenlik (SSL) sertifikası bozuk sitelere girerken uyarı vermesini engelle
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- 1. VERİTABANI ALTYAPISI ---
@@ -30,7 +30,6 @@ def save_setting(api_name, api_key):
 # --- 2. FONKSİYONEL MOTORLAR (APIFY, SCRAPER, AI, BREVO) ---
 
 def fetch_companies_from_maps(keyword, apify_key):
-    """Google Maps üzerinden şirketleri, web sitelerini ve TELEFON numaralarını toplar"""
     client = ApifyClient(apify_key)
     run_input = {
         "searchStringsArray": [keyword],
@@ -44,7 +43,6 @@ def fetch_companies_from_maps(keyword, apify_key):
             results.append({
                 "name": item.get("title"),
                 "website": item.get("website"),
-                # Google Maps'te kayıtlı telefonu da alıyoruz!
                 "maps_phone": item.get("phoneUnformatted") or item.get("phone") 
             })
         return results
@@ -53,7 +51,6 @@ def fetch_companies_from_maps(keyword, apify_key):
         return []
 
 def scrape_website_details(url):
-    """Deep Scraper: Raw HTML araması ve kesin link yönlendirmesi yapar"""
     if not url: return None, None
     if not url.startswith("http"): url = "http://" + url
     
@@ -72,7 +69,6 @@ def scrape_website_details(url):
                 email = a['href'].replace('mailto:', '').split('?')[0].strip()
                 break
         
-        # DÜZELTME: Sadece görünen metinde değil, HTML'in EN DİBİNDE (Raw HTML) email ara!
         if not email:
             emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
             valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css', '.woff'))]
@@ -96,18 +92,16 @@ def scrape_website_details(url):
         soup = BeautifulSoup(html, 'html.parser')
         contact_info = extract_contact(html)
         
-        # Link bulmayı daha akıllı yaptık ( /iletisim gibi yarım linkleri bozmadan birleştirir )
         form_url = None
         for a in soup.find_all('a', href=True):
-            href = a['href'].lower()
+            href = a.get('href', '').lower()
             if any(word in href for word in ['iletisim', 'contact', 'bize-ulasin', 'hakkimizda']):
                 form_url = a['href']
                 if not form_url.startswith('http'):
-                    base_url = url.split('/')[0] + "//" + url.split('/')[2] # Ana domaini alır
+                    base_url = url.split('/')[0] + "//" + url.split('/')[2] 
                     form_url = base_url + form_url if form_url.startswith('/') else base_url + '/' + form_url
                 break
         
-        # ZEKİ HAMLE: Eğer ana sayfada mail yoksa (sadece tel bulsa bile), İletişim sayfasına dal!
         if (not contact_info or "@" not in contact_info) and form_url:
             try:
                 res_contact = requests.get(form_url, timeout=10, headers=headers, verify=False)
@@ -115,40 +109,14 @@ def scrape_website_details(url):
                     new_contact = extract_contact(res_contact.text)
                     if new_contact and "@" in new_contact:
                         contact_info = new_contact
-            except: pass
-                
-        return contact_info, form_url
-    except:
-        return None, None
-            
-        html = res.text
-        soup = BeautifulSoup(html, 'html.parser')
-        
-        contact_info = extract_contact(html)
-        
-        form_url = None
-        for a in soup.find_all('a', href=True):
-            href = a['href'].lower()
-            if any(word in href for word in ['iletisim', 'contact', 'bize-ulasin', 'hakkimizda']):
-                form_url = a['href']
-                if not form_url.startswith('http'):
-                    form_url = url.rstrip('/') + '/' + form_url.lstrip('/')
-                break
-        
-        if not contact_info and form_url:
-            try:
-                res_contact = requests.get(form_url, timeout=10, headers=headers, verify=False)
-                if res_contact.status_code == 200:
-                    contact_info = extract_contact(res_contact.text)
-            except:
+            except Exception:
                 pass
                 
         return contact_info, form_url
-    except:
+    except Exception:
         return None, None
 
 def generate_personalized_email(company_name, website, groq_key):
-    """Groq Llama-3.1"""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {groq_key}",
@@ -195,7 +163,7 @@ def send_email_via_brevo(to_email, subject, html_content, brevo_key, sender_emai
     try:
         res = requests.post(url, json=payload, headers=headers, timeout=10)
         return res.status_code in [200, 201, 202]
-    except:
+    except Exception:
         return False
 
 # --- 3. STREAMLIT KULLANICI ARAYÜZÜ ---
@@ -246,7 +214,6 @@ with tab1:
                         st.info(f"👉 {comp['name']} web sitesi detayları taranıyor...")
                         email, form_url = scrape_website_details(comp['website'])
                         
-                        # ZEKİ BİRLEŞTİRME: Siteden bulamadıysa Haritadaki Telefonu göster!
                         final_contact_display = email
                         if not final_contact_display and comp.get('maps_phone'):
                             final_contact_display = f"Maps Tel: {comp['maps_phone']}"
