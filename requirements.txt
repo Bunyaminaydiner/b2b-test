@@ -3,3 +3,4 @@ pandas
 apify-client
 requests
 beautifulsoup4
+selenium
