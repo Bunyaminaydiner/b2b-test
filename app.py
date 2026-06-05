@@ -3,17 +3,15 @@ import sqlite3
 import pandas as pd
 import requests
 import re
-import time
-import shutil
 import urllib3
 from apify_client import ApifyClient
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service
+from urllib.parse import urljoin
 
+# Güvenlik (SSL) sertifikası bozuk sitelere girerken hata vermeyi engelle
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+# --- 1. VERİTABANI ALTYAPISI ---
 conn = sqlite3.connect('b2b_automation.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS Settings (api_name TEXT PRIMARY KEY, api_key TEXT)''')
@@ -29,6 +27,8 @@ def get_setting(api_name):
 def save_setting(api_name, api_key):
     c.execute("REPLACE INTO Settings (api_name, api_key) VALUES (?, ?)", (api_name, api_key))
     conn.commit()
+
+# --- 2. FONKSİYONEL MOTORLAR (APIFY, SCRAPER, AI, BREVO) ---
 
 def fetch_companies_from_maps(keyword, apify_key):
     client = ApifyClient(apify_key)
@@ -51,83 +51,82 @@ def fetch_companies_from_maps(keyword, apify_key):
         st.error(f"Apify Harita Hatası: {e}")
         return []
 
-def get_html_with_selenium(url):
-    """Arka planda gizli bir Google Chrome açıp JavaScript'in yüklenmesini bekler"""
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-    
-    try:
-        chromedriver_path = shutil.which("chromedriver")
-        service = Service(chromedriver_path)
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(15)
-        driver.get(url)
-        time.sleep(4) # Sitenin tam yüklenip gizli maili basması için bekleme süresi
-        html = driver.page_source
-        driver.quit()
-        return html
-    except Exception:
-        return ""
-
 def scrape_website_details(url):
+    """Multi-Page Scraper: Ana sayfa ve tüm alt iletişim sayfalarını tarar"""
     if not url: return None, None
     if not url.startswith("http"): url = "http://" + url
     
-    def extract_contact(html):
-        soup = BeautifulSoup(html, 'html.parser')
-        text_content = soup.get_text(separator=' ')
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+    
+    def extract_from_html(html_code):
+        soup = BeautifulSoup(html_code, 'html.parser')
+        text = soup.get_text(separator=' ')
         
-        email = None
+        # 1. Mailto Etiketleri
         for a in soup.find_all('a', href=True):
             if a['href'].lower().startswith('mailto:'):
-                email = a['href'].replace('mailto:', '').split('?')[0].strip()
-                break
+                return a['href'].replace('mailto:', '').split('?')[0].strip(), None
+                
+        # 2. Gelişmiş Email Regex
+        emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,4}', html_code)
+        valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css', '.woff', '.woff2'))]
         
-        if not email:
-            emails = re.findall(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', html)
-            valid_emails = [e for e in emails if not e.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.js', '.css', '.woff'))]
-            if valid_emails: email = valid_emails[0] 
-            
-        phone = None
-        phones = re.findall(r'(?:0|\+90|90)?\s*\(?\d{3}\)?\s*\d{3}\s*\d{2}\s*\d{2}', text_content)
-        if phones: phone = phones[0]
+        # 3. Gelişmiş TR Telefon Regex
+        phones = re.findall(r'(?:0|\+90|90)?\s*\(?[1-9]\d{2}\)?\s*\d{3}\s*\d{2}\s*\d{2}', text)
+        
+        found_email = valid_emails[0] if valid_emails else None
+        found_phone = phones[0] if phones else None
+        
+        return found_email, found_phone
 
+    try:
+        # 1. AŞAMA: Ana Sayfayı Tara
+        res = requests.get(url, timeout=8, headers=headers, verify=False)
+        if res.status_code != 200: return None, None
+        
+        main_html = res.text
+        email, phone = extract_from_html(main_html)
+        
+        # Form ve alt sayfa linklerini tara
+        soup = BeautifulSoup(main_html, 'html.parser')
+        sub_pages = set()
+        form_url = None
+        
+        for a in soup.find_all('a', href=True):
+            href = a['href'].strip()
+            href_lower = href.lower()
+            # İletişim, hakkımızda veya iletişim formu olabilecek tüm sayfaları listeye al
+            if any(word in href_lower for word in ['iletisim', 'contact', 'bize-ulasin', 'hakkimizda', 'about', 'bize-yazin']):
+                full_sub_url = urljoin(url, href)
+                sub_pages.add(full_sub_url)
+                if not form_url and any(f in href_lower for f in ['form', 'iletisim', 'contact']):
+                    form_url = full_sub_url
+
+        # 2. AŞAMA: Eğer ana sayfada mail bulunamadıysa, sırayla bulunan tüm alt sayfaların içine gir!
+        if not email:
+            for page in sub_pages:
+                try:
+                    res_sub = requests.get(page, timeout=5, headers=headers, verify=False)
+                    if res_sub.status_code == 200:
+                        sub_email, sub_phone = extract_from_html(res_sub.text)
+                        if sub_email:
+                            email = sub_email
+                        if sub_phone and not phone:
+                            phone = sub_phone
+                        if email: break # Maili bulduğumuz an döngüden çık, vakit kaybetme!
+                except Exception:
+                    pass
+
+        # Sonuçları kurallara göre birleştir
         final_contact = ""
         if email: final_contact += f"{email}"
         if phone: final_contact += f" | Site Tel: {phone}" if email else f"Site Tel: {phone}"
-            
-        return final_contact if final_contact else None
-
-    # Selenium ile Ana Sayfaya Gir
-    html = get_html_with_selenium(url)
-    if not html: return None, None
         
-    soup = BeautifulSoup(html, 'html.parser')
-    contact_info = extract_contact(html)
-    
-    form_url = None
-    for a in soup.find_all('a', href=True):
-        href = a.get('href', '').lower()
-        if any(word in href for word in ['iletisim', 'contact', 'bize-ulasin', 'hakkimizda']):
-            form_url = a['href']
-            if not form_url.startswith('http'):
-                base_url = url.split('/')[0] + "//" + url.split('/')[2] 
-                form_url = base_url + form_url if form_url.startswith('/') else base_url + '/' + form_url
-            break
-    
-    # Ana sayfada mail yoksa İletişim Sayfasına da Selenium ile dal
-    if (not contact_info or "@" not in contact_info) and form_url:
-        contact_html = get_html_with_selenium(form_url)
-        if contact_html:
-            new_contact = extract_contact(contact_html)
-            if new_contact and "@" in new_contact:
-                contact_info = new_contact
-                
-    return contact_info, form_url
+        return (final_contact if final_contact else None), form_url
+    except Exception:
+        return None, None
 
 def generate_personalized_email(company_name, website, groq_key):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -224,7 +223,7 @@ with tab1:
                     for comp in companies:
                         st.markdown(f"--- \n**İşlenen Firma:** {comp['name']}")
                         
-                        st.info(f"👉 {comp['name']} web sitesi detayları taranıyor (Selenium JS Engine aktif)...")
+                        st.info(f"👉 {comp['name']} web sitesi detayları taranıyor (Deep Multi-Page Engine)...")
                         email, form_url = scrape_website_details(comp['website'])
                         
                         final_contact_display = email
