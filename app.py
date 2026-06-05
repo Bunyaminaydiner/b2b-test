@@ -3,14 +3,17 @@ import sqlite3
 import pandas as pd
 import requests
 import re
+import time
+import shutil
 import urllib3
 from apify_client import ApifyClient
 from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 
-# Güvenlik (SSL) sertifikası bozuk sitelere girerken uyarı vermesini engelle
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-# --- 1. VERİTABANI ALTYAPISI ---
 conn = sqlite3.connect('b2b_automation.db', check_same_thread=False)
 c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS Settings (api_name TEXT PRIMARY KEY, api_key TEXT)''')
@@ -26,8 +29,6 @@ def get_setting(api_name):
 def save_setting(api_name, api_key):
     c.execute("REPLACE INTO Settings (api_name, api_key) VALUES (?, ?)", (api_name, api_key))
     conn.commit()
-
-# --- 2. FONKSİYONEL MOTORLAR (APIFY, SCRAPER, AI, BREVO) ---
 
 def fetch_companies_from_maps(keyword, apify_key):
     client = ApifyClient(apify_key)
@@ -50,14 +51,31 @@ def fetch_companies_from_maps(keyword, apify_key):
         st.error(f"Apify Harita Hatası: {e}")
         return []
 
+def get_html_with_selenium(url):
+    """Arka planda gizli bir Google Chrome açıp JavaScript'in yüklenmesini bekler"""
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+    
+    try:
+        chromedriver_path = shutil.which("chromedriver")
+        service = Service(chromedriver_path)
+        driver = webdriver.Chrome(service=service, options=chrome_options)
+        driver.set_page_load_timeout(15)
+        driver.get(url)
+        time.sleep(4) # Sitenin tam yüklenip gizli maili basması için bekleme süresi
+        html = driver.page_source
+        driver.quit()
+        return html
+    except Exception:
+        return ""
+
 def scrape_website_details(url):
     if not url: return None, None
     if not url.startswith("http"): url = "http://" + url
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
-    }
     
     def extract_contact(html):
         soup = BeautifulSoup(html, 'html.parser')
@@ -84,37 +102,32 @@ def scrape_website_details(url):
             
         return final_contact if final_contact else None
 
-    try:
-        res = requests.get(url, timeout=10, headers=headers, verify=False)
-        if res.status_code != 200: return None, None
-            
-        html = res.text
-        soup = BeautifulSoup(html, 'html.parser')
-        contact_info = extract_contact(html)
+    # Selenium ile Ana Sayfaya Gir
+    html = get_html_with_selenium(url)
+    if not html: return None, None
         
-        form_url = None
-        for a in soup.find_all('a', href=True):
-            href = a.get('href', '').lower()
-            if any(word in href for word in ['iletisim', 'contact', 'bize-ulasin', 'hakkimizda']):
-                form_url = a['href']
-                if not form_url.startswith('http'):
-                    base_url = url.split('/')[0] + "//" + url.split('/')[2] 
-                    form_url = base_url + form_url if form_url.startswith('/') else base_url + '/' + form_url
-                break
-        
-        if (not contact_info or "@" not in contact_info) and form_url:
-            try:
-                res_contact = requests.get(form_url, timeout=10, headers=headers, verify=False)
-                if res_contact.status_code == 200:
-                    new_contact = extract_contact(res_contact.text)
-                    if new_contact and "@" in new_contact:
-                        contact_info = new_contact
-            except Exception:
-                pass
+    soup = BeautifulSoup(html, 'html.parser')
+    contact_info = extract_contact(html)
+    
+    form_url = None
+    for a in soup.find_all('a', href=True):
+        href = a.get('href', '').lower()
+        if any(word in href for word in ['iletisim', 'contact', 'bize-ulasin', 'hakkimizda']):
+            form_url = a['href']
+            if not form_url.startswith('http'):
+                base_url = url.split('/')[0] + "//" + url.split('/')[2] 
+                form_url = base_url + form_url if form_url.startswith('/') else base_url + '/' + form_url
+            break
+    
+    # Ana sayfada mail yoksa İletişim Sayfasına da Selenium ile dal
+    if (not contact_info or "@" not in contact_info) and form_url:
+        contact_html = get_html_with_selenium(form_url)
+        if contact_html:
+            new_contact = extract_contact(contact_html)
+            if new_contact and "@" in new_contact:
+                contact_info = new_contact
                 
-        return contact_info, form_url
-    except Exception:
-        return None, None
+    return contact_info, form_url
 
 def generate_personalized_email(company_name, website, groq_key):
     url = "https://api.groq.com/openai/v1/chat/completions"
@@ -211,7 +224,7 @@ with tab1:
                     for comp in companies:
                         st.markdown(f"--- \n**İşlenen Firma:** {comp['name']}")
                         
-                        st.info(f"👉 {comp['name']} web sitesi detayları taranıyor...")
+                        st.info(f"👉 {comp['name']} web sitesi detayları taranıyor (Selenium JS Engine aktif)...")
                         email, form_url = scrape_website_details(comp['website'])
                         
                         final_contact_display = email
